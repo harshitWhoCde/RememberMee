@@ -1,18 +1,21 @@
-import React from 'react'
-import Webcam from './src/Webcam'
-
-import { Routes,Route } from 'react-router-dom';
-import Profile from './Profile';
+import { Routes, Route } from 'react-router-dom';
+import Layout from './components/Layout';
+import LivingRoom from './pages/LivingRoom';
+import VisitorArchive from './pages/VisitorArchive';
+import VoiceAsk from './pages/VoiceAsk';
+import Profile from './pages/Profile';
 
 function App() {
   return (
-    <div>
-      <Routes>
-        <Route path="/" element={<Webcam />} />
-        <Route path="/profile" element={<Profile />} />
-      </Routes>
-    </div>
-  )
+    <Routes>
+      <Route path="/" element={<Layout />}>
+        <Route index element={<LivingRoom />} />
+        <Route path="visitors" element={<VisitorArchive />} />
+        <Route path="voice" element={<VoiceAsk />} />
+        <Route path="profile" element={<Profile />} />
+      </Route>
+    </Routes>
+  );
 }
 
-export default App
+export default App;
