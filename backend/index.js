@@ -14,6 +14,10 @@ app.use(cors());
 
 app.use(express.json());
 
+// ✅ MOUNT ROUTES
+const memoryRoutes = require("./routes/memoryRoutes");
+app.use("/api", memoryRoutes);
+
 // ✅ CONNECT MONGODB
 mongoose
   .connect("mongodb://localhost:27017/face")
@@ -128,6 +132,25 @@ app.post("/recognize", upload.single("file"), async (req, res) => {
     res.status(500).send("Error");
   }
 });
+
+// ✅ ASK API (Mock for Hackathon MVP)
+const askQuestion = async (req, res) => {
+  try {
+    const { question } = req.body;
+    let contextResponse = "Scanning memories... no specific context found.";
+    
+    if (question && question.toLowerCase().includes("rahul")) {
+      contextResponse = "Rahul is your son. You played chess.";
+    }
+    
+    res.json({ success: true, response: contextResponse });
+  } catch (err) {
+    console.error("ERROR in askQuestion:", err);
+    res.status(500).json({ success: false, error: "Error processing question" });
+  }
+};
+
+app.post("/api/ask", askQuestion);
 
 // ✅ START SERVER
 app.listen(5000, () => console.log("Backend running on 5000 🚀"));
