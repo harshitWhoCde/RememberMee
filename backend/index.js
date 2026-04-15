@@ -6,7 +6,7 @@ const fetch = require("node-fetch");
 const FormData = require("form-data");
 
 const User = require("./models/User");
-
+const Memory = require("./models/Memory");
 const app = express();
 const upload = multer();
 
@@ -138,11 +138,11 @@ const askQuestion = async (req, res) => {
   try {
     const { question } = req.body;
     let contextResponse = "Scanning memories... no specific context found.";
-    
+
     if (question && question.toLowerCase().includes("rahul")) {
       contextResponse = "Rahul is your son. You played chess.";
     }
-    
+
     res.json({ success: true, response: contextResponse });
   } catch (err) {
     console.error("ERROR in askQuestion:", err);
@@ -150,7 +150,77 @@ const askQuestion = async (req, res) => {
   }
 };
 
-app.post("/api/ask", askQuestion);
+app.get("/test", (req, res) => {
+  res.send("Server working");
+});
 
+app.post("/api/ask", askQuestion);
+// ✅ MATCH FACE ROUTE
+app.post("/api/match-face", async (req, res) => {
+  try {
+    const { embedding } = req.body;
+
+    if (!embedding || !Array.isArray(embedding)) {
+      return res.status(400).json({ found: false, error: "Invalid embedding" });
+    }
+
+    const users = await User.find();
+
+    let memories = [];
+    try {
+      memories = await Memory.find();
+    } catch (e) {
+      console.warn("⚠️ Memory collection not available:", e.message);
+    }
+
+    const allPeople = [...users, ...memories];
+
+    let bestMatch = null;
+    let bestScore = 0;
+    const threshold = 0.75;
+
+    for (let person of allPeople) {
+      let targetEmbeddings = [];
+
+      if (person.embeddings?.length) {
+        targetEmbeddings = person.embeddings;
+      } else if (person.faceDescriptor) {
+        targetEmbeddings = [person.faceDescriptor];
+      } else if (person.embedding) {
+        targetEmbeddings = [person.embedding];
+      }
+
+      for (let emb of targetEmbeddings) {
+        if (!Array.isArray(emb)) continue;
+
+        const score = cosineSimilarity(embedding, emb);
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = person;
+        }
+      }
+    }
+
+    if (bestScore > threshold && bestMatch?.name !== "Unknown") {
+      return res.json({
+        found: true,
+        name: bestMatch.name,
+        source: bestMatch.constructor.modelName,
+      });
+    }
+
+    return res.json({ found: false, isUnknown: true });
+
+  } catch (err) {
+    console.error("Match Route Error:", err);
+
+    // ✅ Always return JSON (important)
+    res.status(500).json({
+      found: false,
+      error: err.message,
+    });
+  }
+});
 // ✅ START SERVER
 app.listen(5000, () => console.log("Backend running on 5000 🚀"));

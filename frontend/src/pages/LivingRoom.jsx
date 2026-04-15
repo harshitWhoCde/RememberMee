@@ -18,6 +18,7 @@ const sanitizeDescriptor = (descriptorString) => {
 };
 
 export default function LivingRoom() {
+  const lastCallRef = useRef(0);
   const videoRef = useRef();
   const canvasRef = useRef();
   const identifiedPersonRef = useRef(null);
@@ -38,7 +39,6 @@ export default function LivingRoom() {
   const [isCameraOn, setIsCameraOn] = useState(false);
   const streamRef = useRef(null); // To keep track of the stream so we can stop it
 
-  // Optimized Matcher Initialization
   const initializeFaceMatcher = async () => {
     try {
       const res = await fetch('http://localhost:5000/api/memories');
@@ -73,10 +73,6 @@ export default function LivingRoom() {
       console.error("Initialization Error:", error);
     }
   };
-
-  // Optimized Detection Loop
-
-
   // 1. Load the AI Models when the component mounts
   useEffect(() => {
     const loadModels = async () => {
@@ -85,207 +81,209 @@ export default function LivingRoom() {
         await Promise.all([
           faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
           faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
         ]);
-        await initializeFaceMatcher();
+
+        console.log("All models loaded ✅");
         setIsInitializing(false);
-        //startVideo();
       } catch (error) {
-        console.error("Error loading AI models. Did you put them in public/models?", error);
+        console.error("Error loading models:", error);
       }
     };
     loadModels();
   }, []);
 
   useEffect(() => {
-    if (isCameraOn) {
-      startVideo();
-    } else {
-      stopVideo();
-    }
+    if (isCameraOn) startVideo();
+    else stopVideo();
   }, [isCameraOn]);
 
-  // 2. Start the Webcam
   const startVideo = () => {
-    navigator.mediaDevices.getUserMedia({ video: true })
-      .then((currentStream) => {
-        videoRef.current.srcObject = currentStream;
-        streamRef.current = currentStream; // Store the stream to stop it later
-      })
-      .catch((err) => {
-        console.error("Error accessing webcam:", err);
-        setIsCameraOn(false);
+    navigator.mediaDevices.getUserMedia({
+      video: {
+        width: 640,
+        height: 480,
+        facingMode: "user"
+      }
+    })
+      .then((stream) => {
+        videoRef.current.srcObject = stream;
+        streamRef.current = stream;
       });
   };
 
   const stopVideo = () => {
-    // 1. Kill the detection loop immediately
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-
-    // 2. Stop the hardware tracks
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => {
-        track.stop(); // This tells the hardware to turn off
-      });
-      streamRef.current = null;
-    }
-
-    // 3. Wipe the video element source
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-      videoRef.current.load(); // Forces the element to reset
-    }
-
-    // 4. Clear the UI
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
     setIdentifiedPerson(null);
+    identifiedPersonRef.current = null;
     setIsUnknownFace(false);
   };
 
-  // 3. The Real-Time Face Tracking Loop
-  // 3. The Real-Time Face Tracking Loop
-  const handleVideoOnPlay = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
+  // --- HYBRID VERIFICATION LOGIC ---
+  const verifyWithDeepFace = async () => {
+    if (!videoRef.current) return;
 
-    // Safety Check: Ensure video is ready and has dimensions
-    if (!video || !canvas || video.paused || video.ended || video.readyState < 2) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
+    canvas.getContext("2d").drawImage(videoRef.current, 0, 0);
 
-    // ✅ Clear any existing interval first (prevents duplicates)
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-    }
+    const blob = await new Promise(res =>
+      canvas.toBlob(res, "image/jpeg", 0.95)
+    );
 
-    intervalRef.current = setInterval(async () => {
-      // ✅ Stop loop if camera is off
-      if (!isCameraOn) {
-        clearInterval(intervalRef.current);
+    const formData = new FormData();
+    formData.append("file", blob);
+
+    try {
+      // 1️⃣ Get embedding from DeepFace
+      const response = await fetch("http://localhost:8000/embed", {
+        method: "POST",
+        body: formData,
+      });
+
+      const text = await response.text();
+
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        console.error("❌ Not JSON from DeepFace:", text);
         return;
       }
 
-      // Additional safety inside loop
-      if (!video || !canvas || isInitializing || !isCameraOn || isUnknownFace) return;
-
-      try {
-        const detections = await faceapi.detectAllFaces(
-          video,
-          new faceapi.TinyFaceDetectorOptions()
-        ).withFaceLandmarks().withFaceDescriptors();
-
-        // Only do math if the video actually has dimensions
-        if (video.videoWidth > 0) {
-          const displaySize = {
-            width: video.videoWidth,
-            height: video.videoHeight
-          };
-
-          faceapi.matchDimensions(canvas, displaySize);
-          const resizedDetections = faceapi.resizeResults(detections, displaySize);
-
-          const ctx = canvas.getContext('2d');
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          faceapi.draw.drawDetections(canvas, resizedDetections);
-        }
-
-        // ================= FACE MATCHING LOGIC =================
-        if (detections.length > 0) {
-          let rawDescriptor = detections[0].descriptor;
-
-          // Camera sanitizer
-          if (Math.abs(rawDescriptor[0]) > 10) {
-            rawDescriptor = rawDescriptor.map(val => val / 1000000000);
-          }
-
-          const currentFaceDescriptor = new Float32Array(rawDescriptor);
-
-          if (!isUnknownFace) {
-            // ✅ FIX: Reset bestMatch at the START (prevents stale "Jacob")
-            let bestMatch = { label: 'unknown', distance: 1.0 };
-
-            if (faceMatcherRef.current) {
-              const match = faceMatcherRef.current.findBestMatch(currentFaceDescriptor);
-
-              console.log(`AI Confidence Distance: ${match.distance}`);
-
-              const THRESHOLD = 0.42;
-
-              if (match.label !== 'unknown' && match.distance < THRESHOLD) {
-                bestMatch = match; // ✅ assign only if valid match
-              }
-            }
-
-            // ✅ SINGLE SOURCE OF TRUTH (cleaned logic)
-            if (bestMatch.label !== 'unknown') {
-              // Recognized person (e.g., Jacob)
-              if (identifiedPersonRef.current !== bestMatch.label) {
-                identifiedPersonRef.current = bestMatch.label;
-                setIdentifiedPerson(bestMatch.label);
-                fetchContextFromBackend(bestMatch.label);
-                setIsUnknownFace(false);
-              }
-            } else {
-              // Stranger detected
-              if (identifiedPersonRef.current !== "Stranger") {
-                identifiedPersonRef.current = "Stranger";
-                setIdentifiedPerson(null);
-                setContextData(null);
-                currentDescriptorRef.current = currentFaceDescriptor;
-                setIsUnknownFace(true);
-              }
-            }
-          }
-        } else {
-          // Handle empty frame
-          if (identifiedPersonRef.current !== null || isUnknownFace) {
-            identifiedPersonRef.current = null;
-            setIdentifiedPerson(null);
-            setContextData(null);
-
-            isUnknownFaceRef.current = false;
-            setIsUnknownFace(false);
-
-            console.log("Frame is empty - Clearing HUD");
-          }
-        }
-      } catch (err) {
-        console.error("Detection loop error:", err);
-        clearInterval(intervalRef.current); // prevent memory leaks
+      if (!data.success) {
+        identifiedPersonRef.current = null;
+        return;
       }
-    }, 200);
+
+      console.log("DeepFace Embedding Received:", data.embedding);
+
+      // 2️⃣ Throttle API calls
+      if (Date.now() - lastCallRef.current <= 2000) return;
+      lastCallRef.current = Date.now();
+
+      // 3️⃣ Match face with backend
+      const matchRes = await fetch(
+        "http://localhost:5000/api/match-face",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ embedding: data.embedding }),
+        }
+      );
+
+      const matchData = await matchRes.json();
+
+      console.log("Match result:", matchData);
+
+      // 4️⃣ Handle result
+      if (matchData.found) {
+        setIdentifiedPerson(matchData.name);
+        identifiedPersonRef.current = matchData.name;
+        fetchContextFromBackend(matchData.name);
+      } else if (matchData.isUnknown) {
+        setIsUnknownFace(true);
+        identifiedPersonRef.current = "Stranger";
+      } else {
+        identifiedPersonRef.current = null;
+      }
+    } catch (err) {
+      console.error("DeepFace verification failed:", err);
+      identifiedPersonRef.current = null;
+    }
+  };
+  // 3. The Real-Time Face Tracking Loop
+
+
+  const handleVideoOnPlay = () => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+
+    intervalRef.current = setInterval(async () => {
+      // ✅ REMOVED 'identifiedPerson' from the block list so the loop keeps drawing boxes
+      if (!isCameraOn || isInitializing) return;
+
+      const detections = await faceapi.detectAllFaces(
+        videoRef.current,
+        new faceapi.TinyFaceDetectorOptions({
+          inputSize: 320,   // 🔥 increase detection resolution
+          scoreThreshold: 0.5 // 🔥 lower = easier detection
+        })
+      );
+
+      // Draw boxes for UI feedback
+      if (
+        videoRef.current &&
+        videoRef.current.readyState === 4 &&
+        canvasRef.current
+      ) {
+        const displaySize = { width: videoRef.current.videoWidth, height: videoRef.current.videoHeight };
+        faceapi.matchDimensions(canvasRef.current, displaySize);
+        const resized = faceapi.resizeResults(detections, displaySize);
+        const ctx = canvasRef.current.getContext('2d');
+        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        faceapi.draw.drawDetections(canvasRef.current, resized);
+      }
+
+      // ✅ LOGIC: If face exists AND we aren't currently showing a result/form
+      if (detections.length > 0 && !identifiedPerson && !isUnknownFace) {
+        if (identifiedPersonRef.current !== "Verifying...") {
+          console.log("Face detected! Sending to DeepFace...");
+          console.log("Detections:", detections.length);
+          identifiedPersonRef.current = "Verifying...";
+          verifyWithDeepFace();
+        }
+      }
+
+      // ✅ LOGIC: If frame is empty, reset the 'Verifying' block so it can try again later
+      if (detections.length === 0 && !isUnknownFace && !identifiedPerson) {
+        identifiedPersonRef.current = null;
+      }
+    }, 500);
   };
 
-  // Handle saving new visitor to backend
+  // --- REGISTRATION LOGIC ---
   const handleRegisterVisitor = async (e) => {
     e.preventDefault();
+
+    // Capture the face for the new embedding
+    const canvas = document.createElement("canvas");
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
+    canvas.getContext("2d").drawImage(videoRef.current, 0, 0);
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg'));
+
+    const formData = new FormData();
+    formData.append("file", blob);
+
     try {
-      // FORCE strings to keep their decimal points by using map(String)
-      const descriptorString = Array.from(currentDescriptorRef.current)
-        .map(num => num.toFixed(6)) // Force 6 decimal places
-        .join(',');
+      // 1. Get embedding from Python
+      const embedRes = await fetch("http://localhost:8000/embed", { method: "POST", body: formData });
+      const embedData = await embedRes.json();
 
-      const res = await fetch('http://localhost:5000/api/memory', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: newVisitorName,
-          relation: newVisitorRelation,
-          text: `${newVisitorName} is my ${newVisitorRelation}.`,
-          faceDescriptor: descriptorString
-        }),
-      });
+      if (embedData.success) {
+        // 2. Save to MERN Backend
+        const res = await fetch('http://localhost:5000/api/memory', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: newVisitorName,
+            relation: newVisitorRelation,
+            faceDescriptor: embedData.embedding, // Save the precise DeepFace embedding
+            text: `${newVisitorName} is my ${newVisitorRelation}.`
+          }),
+        });
 
-      if (res.ok) {
-        await initializeFaceMatcher();
-        setIsUnknownFace(false);
-        setIdentifiedPerson(newVisitorName);
-        fetchContextFromBackend(newVisitorName);
-        setNewVisitorName('');
-        setNewVisitorRelation('');
+        if (res.ok) {
+          setIsUnknownFace(false);
+          setIdentifiedPerson(newVisitorName);
+          identifiedPersonRef.current = newVisitorName;
+          fetchContextFromBackend(newVisitorName);
+        }
       }
     } catch (error) {
-      console.error("Error registering visitor:", error);
+      console.error("Registration Error:", error);
     }
   };
 
