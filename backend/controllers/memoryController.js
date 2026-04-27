@@ -26,7 +26,51 @@ const getMemories = async (req, res) => {
   }
 };
 
+const updateConversationContext = async (req, res) => {
+  try {
+    const { name, transcript } = req.body;
+
+    if (!name || !transcript) {
+      return res.status(400).json({ success: false, error: "Name and transcript are required" });
+    }
+
+    const prompt = `You are an AI assistant for a dementia patient. Summarize the following conversation transcript between the patient and their visitor into a single, concise sentence that captures the key topic discussed. Transcript: "${transcript}"`;
+
+    const response = await fetch('http://localhost:11434/api/generate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'llama3',
+        prompt: prompt,
+        stream: false
+      })
+    });
+
+    const data = await response.json();
+    const summary = data.response;
+
+    // Find the latest memory for this visitor and update the event with the summary
+    const updatedMemory = await Memory.findOneAndUpdate(
+      { name: name },
+      { event: summary },
+      { new: true, sort: { createdAt: -1 } }
+    );
+
+    if (!updatedMemory) {
+      return res.status(404).json({ success: false, error: "Visitor not found" });
+    }
+
+    res.json({ success: true, memory: updatedMemory });
+  } catch (error) {
+    console.error("Error in updateConversationContext:", error);
+    res.status(500).json({ success: false, error: "Failed to update context" });
+  }
+};
+
 module.exports = {
   addMemory,
-  getMemories
+  getMemories,
+  updateConversationContext
 };

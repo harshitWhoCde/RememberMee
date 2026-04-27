@@ -5,8 +5,7 @@ const memorySchema = new mongoose.Schema({
   relation: { type: String },
   // 'event' can store the auto-generated text (e.g., "Rishi is my son")
   event: { type: String, required: true },
-  // ✅ Changed from String to Array of Numbers for DeepFace compatibility
-  faceDescriptor: { type: [Number], required: false },
+  faceDescriptor: { type: String, required: false },
   createdAt: { type: Date, default: Date.now }
 });
 
