@@ -5,6 +5,8 @@ const mongoose = require("mongoose");
 const fetch = require("node-fetch");
 const FormData = require("form-data");
 
+
+// Change line 8 and 9 to:
 const User = require("./models/User");
 const Memory = require("./models/Memory");
 const app = express();
@@ -16,7 +18,9 @@ app.use(express.json());
 
 // ✅ MOUNT ROUTES
 const memoryRoutes = require("./routes/memoryRoutes");
+const authRoutes = require("./routes/auth");
 app.use("/api", memoryRoutes);
+app.use("/api/auth", authRoutes);
 
 // ✅ CONNECT MONGODB
 mongoose

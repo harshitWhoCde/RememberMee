@@ -2,6 +2,15 @@ const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
+  email: {
+    type: String,
+    required: true,
+    unique: true
+  },
+  password: {
+    type: String,
+    required: true
+  },
   // Legacy support for single embedding
   embedding: { type: [Number] },
   // ✅ Primary storage for multiple DeepFace embeddings
@@ -11,4 +20,4 @@ const userSchema = new mongoose.Schema({
 });
 
 // Explicitly naming the collection 'users'
-module.exports = mongoose.model("User", userSchema, 'users');
+module.exports = mongoose.models.User || mongoose.model("User", userSchema, 'users');
