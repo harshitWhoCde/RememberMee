@@ -35,6 +35,7 @@ export default function LivingRoom() {
   const identifiedPersonRef = useRef(null);
   const isUnknownFaceRef = useRef(false);
   const faceMatcherRef = useRef(null);
+<<<<<<< HEAD
   const intervalRef = useRef(null);
   
   // New Refs for Autonomous Flow
@@ -47,6 +48,9 @@ export default function LivingRoom() {
   // Ref mirrors for values that must be read inside setInterval / speech callbacks
   // without going stale. Always update these alongside their state counterparts.
   const voiceStateRef = useRef("idle");
+=======
+  const intervalRef = useRef(null); // Add this at the top with your other refs
+>>>>>>> face-differentiation-branch
 
   // App State
   const [isInitializing, setIsInitializing] = useState(true);
@@ -142,6 +146,7 @@ export default function LivingRoom() {
     await tf.setBackend('webgl');
     await tf.ready();
 
+<<<<<<< HEAD
     await Promise.all([
       faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
       faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
@@ -176,6 +181,18 @@ export default function LivingRoom() {
     else stopVideo();
   }, [isCameraOn]);
 
+=======
+        console.log("All models loaded ✅");
+        initializeFaceMatcher();
+        setIsInitializing(false);
+      } catch (error) {
+        console.error("Error loading models:", error);
+      }
+    };
+    loadModels();
+  }, []);
+
+>>>>>>> face-differentiation-branch
   const startVideo = () => {
     navigator.mediaDevices.getUserMedia({
       video: {
@@ -206,11 +223,97 @@ export default function LivingRoom() {
     setConversationTranscript("");
   };
 
+<<<<<<< HEAD
   // --- PURE face-api.js RECOGNITION PIPELINE ---
   // Replaces the broken hybrid DeepFace approach.
   // All detection, landmark, descriptor extraction, and matching happens
   // entirely in the browser using the already-loaded face-api.js models.
   // No Python server, no /api/match-face route needed.
+=======
+  useEffect(() => {
+    if (isCameraOn) startVideo();
+    else stopVideo();
+  }, [isCameraOn]);
+
+  // --- HYBRID VERIFICATION LOGIC ---
+  const verifyWithDeepFace = async () => {
+    if (!videoRef.current) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
+    canvas.getContext("2d").drawImage(videoRef.current, 0, 0);
+
+    const blob = await new Promise(res =>
+      canvas.toBlob(res, "image/jpeg", 0.95)
+    );
+
+    const formData = new FormData();
+    formData.append("file", blob);
+
+    try {
+      // 1️⃣ Get embedding from DeepFace
+      const response = await fetch("http://localhost:8000/embed", {
+        method: "POST",
+        body: formData,
+      });
+
+      const text = await response.text();
+
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        console.error("❌ Not JSON from DeepFace:", text);
+        return;
+      }
+
+      if (!data.success) {
+        identifiedPersonRef.current = null;
+        return;
+      }
+
+      console.log("DeepFace Embedding Received:", data.embedding);
+
+      // 2️⃣ Throttle API calls
+      // eslint-disable-next-line react-hooks/purity
+      const now = Date.now();
+      if (now - lastCallRef.current <= 2000) return;
+      lastCallRef.current = now;
+
+      // 3️⃣ Match face with backend
+      const matchRes = await fetch(
+        "http://localhost:5000/api/match-face",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ embedding: data.embedding }),
+        }
+      );
+
+      const matchData = await matchRes.json();
+
+      console.log("Match result:", matchData);
+
+      // 4️⃣ Handle result
+      if (matchData.found) {
+        setIdentifiedPerson(matchData.name);
+        identifiedPersonRef.current = matchData.name;
+        fetchContextFromBackend(matchData.name);
+      } else if (matchData.isUnknown) {
+        setIsUnknownFace(true);
+        identifiedPersonRef.current = "Stranger";
+      } else {
+        identifiedPersonRef.current = null;
+      }
+    } catch (err) {
+      console.error("DeepFace verification failed:", err);
+      identifiedPersonRef.current = null;
+    }
+  };
+  // 3. The Real-Time Face Tracking Loop
+
+>>>>>>> face-differentiation-branch
 
   const handleVideoOnPlay = () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -518,7 +621,7 @@ export default function LivingRoom() {
       if (data.success) {
         setContextData(data.response);
       }
-    } catch (error) {
+    } catch {
       console.error("Backend offline");
     }
   };
@@ -534,7 +637,18 @@ export default function LivingRoom() {
     setVoiceStateSynced("idle");
   };
 
+  const recognitionState = isInitializing
+    ? 'Loading models'
+    : isUnknownFace
+      ? 'New visitor'
+      : identifiedPerson
+        ? 'Recognized'
+        : isCameraOn
+          ? 'Scanning'
+          : 'Standby';
+
   return (
+<<<<<<< HEAD
     <div className="px-12 h-full">
       <div className="grid grid-cols-10 gap-8 h-[calc(100vh-160px)] relative">
 
@@ -554,14 +668,33 @@ export default function LivingRoom() {
                 </span>
             </div>
         )}
+=======
+    <div className="h-full px-6 lg:px-8">
+      <div className="grid min-h-[calc(100vh-130px)] grid-cols-12 gap-5">
+        <section className="col-span-12 xl:col-span-8 flex min-h-[520px] flex-col">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-widest text-primary">Live room view</p>
+              <h3 className="mt-1 font-headline text-2xl font-extrabold text-on-surface">Camera Recognition</h3>
+            </div>
+            <div className="flex items-center gap-2 rounded-xl border border-outline-variant/30 bg-surface-container-lowest px-3 py-2">
+              <span className={`h-2.5 w-2.5 rounded-full ${isCameraOn ? 'bg-emerald-500 animate-pulse' : 'bg-outline-variant'}`}></span>
+              <span className="text-xs font-bold uppercase tracking-wider text-on-surface-variant">
+                {isCameraOn ? 'Camera live' : 'Camera off'}
+              </span>
+            </div>
+          </div>
+>>>>>>> face-differentiation-branch
 
-        {/* Left Column - Live Video Feed */}
-        <section className="col-span-10 lg:col-span-6 xl:col-span-7 flex flex-col h-full relative">
-          <div className="relative flex-1 bg-black rounded-lg overflow-hidden shadow-2xl border-4 border-surface-container-highest flex items-center justify-center">
+          <div className="relative flex-1 overflow-hidden rounded-2xl border border-outline-variant/30 bg-[#07151f] shadow-xl shadow-primary/5">
+            {isInitializing && (
+              <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60">
+                <div className="rounded-xl border border-white/15 bg-white/10 px-5 py-3 text-sm font-bold text-white backdrop-blur-md">
+                  Loading AI models...
+                </div>
+              </div>
+            )}
 
-            {isInitializing && <p className="text-white text-2xl animate-pulse absolute z-50">Loading AI Models...</p>}
-
-            {/* The Video and Canvas must sit exactly on top of each other */}
             <video
               ref={videoRef}
               autoPlay
@@ -574,36 +707,52 @@ export default function LivingRoom() {
               className="absolute top-0 left-0 w-full h-full object-cover z-10"
             />
 
-            {/* Camera Controls UI */}
-            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-4 bg-black/40 backdrop-blur-xl p-2 rounded-full border border-white/20 z-20">
-              <button className="p-3 text-white hover:bg-white/20 rounded-full transition-colors">
-                <span className="material-symbols-outlined">videocam</span>
-              </button>
-              <button
-                onClick={() => setIsCameraOn(prev => !prev)}
-                className={`p-3 rounded-full transition-colors ${isCameraOn ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'
-                  } text-white`}
-              >
-                <span className="material-symbols-outlined">
-                  {isCameraOn ? 'power_settings_new' : 'videocam'}
-                </span>
-              </button>
+            {!isCameraOn && !isInitializing && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#07151f] text-center">
+                <span className="material-symbols-outlined mb-3 text-5xl text-primary-fixed-dim">videocam_off</span>
+                <p className="font-headline text-xl font-extrabold text-white">Camera is paused</p>
+                <p className="mt-1 max-w-sm text-sm text-white/60">Start the camera when someone is in the room.</p>
+              </div>
+            )}
+
+            <div className="absolute left-5 top-5 z-30 flex items-center gap-2 rounded-xl border border-white/15 bg-black/45 px-3 py-2 text-white backdrop-blur-md">
+              <span className={`h-2.5 w-2.5 rounded-full ${isCameraOn ? 'bg-red-500 animate-pulse' : 'bg-white/40'}`}></span>
+              <span className="text-[11px] font-bold uppercase tracking-widest">Live Feed</span>
             </div>
 
-            {/* Live Indicator */}
-            <div className="absolute top-8 left-8 flex items-center gap-3 bg-black/50 backdrop-blur-md text-white px-5 py-2.5 rounded-full border border-white/10 z-20">
-              <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></span>
-              <span className="text-sm font-bold tracking-widest uppercase">LIVE FEED</span>
+            <div className="absolute bottom-5 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-2xl border border-white/15 bg-black/45 p-2 backdrop-blur-md">
+              <button
+                onClick={() => setIsCameraOn(prev => !prev)}
+                className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold text-white transition-colors ${
+                  isCameraOn ? 'bg-error hover:bg-error/90' : 'bg-primary hover:bg-primary/90'
+                }`}
+              >
+                <span className="material-symbols-outlined text-xl">
+                  {isCameraOn ? 'power_settings_new' : 'videocam'}
+                </span>
+                {isCameraOn ? 'Stop' : 'Start'}
+              </button>
             </div>
           </div>
         </section>
 
-        {/* Right Column - MemoryHUD & Transcript */}
-        <section className="col-span-10 lg:col-span-4 xl:col-span-3 flex flex-col gap-6 h-full">
+        <section className="col-span-12 xl:col-span-4 flex min-h-[520px] flex-col gap-5">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-2xl border border-outline-variant/20 bg-surface-container-lowest p-4">
+              <p className="text-[11px] font-bold uppercase tracking-widest text-on-surface-variant">Recognition</p>
+              <p className="mt-2 font-headline text-xl font-extrabold text-on-surface">{recognitionState}</p>
+            </div>
+            <div className="rounded-2xl border border-outline-variant/20 bg-surface-container-lowest p-4">
+              <p className="text-[11px] font-bold uppercase tracking-widest text-on-surface-variant">Memory</p>
+              <p className="mt-2 font-headline text-xl font-extrabold text-on-surface">
+                {contextData ? 'Ready' : 'Idle'}
+              </p>
+            </div>
+          </div>
 
-          {/* MemoryHUD Component */}
-          <div className="bg-surface-container-lowest p-6 rounded-lg shadow-xl shadow-blue-900/5 relative overflow-hidden border border-outline-variant/10 flex-shrink-0 transition-all">
+          <div className="relative flex-shrink-0 overflow-hidden rounded-2xl border border-outline-variant/20 bg-surface-container-lowest p-5 shadow-lg shadow-primary/5 transition-all">
             {isUnknownFace ? (
+<<<<<<< HEAD
               <div className="relative z-10 animate-fade-in flex flex-col items-center justify-center text-center py-6">
                 <span className="inline-block bg-amber-100 text-amber-800 px-3 py-1 rounded-full text-xs font-bold mb-4 uppercase animate-pulse">
                   Unrecognized Face
@@ -635,24 +784,80 @@ export default function LivingRoom() {
               <div className="relative z-10">
                 <span className="inline-block bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold mb-4 uppercase animate-pulse">
                   Known Person Detected
+=======
+              <div className="relative z-10">
+                <span className="inline-flex items-center rounded-full bg-amber-100 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-800">
+                  New Visitor Detected
                 </span>
-                <h3 className="text-2xl font-headline font-extrabold text-blue-900 leading-tight mb-6 uppercase">
+                <h4 className="mt-4 font-headline text-xl font-extrabold text-on-surface">Register this face</h4>
+                <form onSubmit={handleRegisterVisitor} className="mt-4 space-y-3">
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-on-surface-variant">Name</label>
+                    <input
+                      type="text"
+                      value={newVisitorName}
+                      onChange={(e) => setNewVisitorName(e.target.value)}
+                      className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2.5 text-sm text-on-surface outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                      placeholder="e.g., Sarah"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-on-surface-variant">Relationship</label>
+                    <input
+                      type="text"
+                      value={newVisitorRelation}
+                      onChange={(e) => setNewVisitorRelation(e.target.value)}
+                      className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2.5 text-sm text-on-surface outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                      placeholder="e.g., Daughter"
+                      required
+                    />
+                  </div>
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        isUnknownFaceRef.current = false;
+                        setIsUnknownFace(false);
+                        setNewVisitorName('');
+                        setNewVisitorRelation('');
+                      }}
+                      className="w-1/3 rounded-xl border border-outline-variant/30 bg-surface-container-high px-3 py-2.5 text-sm font-bold text-on-surface transition-colors hover:bg-surface-container"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="w-2/3 rounded-xl bg-primary px-3 py-2.5 text-sm font-bold text-on-primary transition-colors hover:bg-primary/90"
+                    >
+                      Register
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ) : identifiedPerson ? (
+              <div className="relative z-10">
+                <span className="inline-flex items-center rounded-full bg-emerald-100 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-emerald-800">
+                  Face Detected
+>>>>>>> face-differentiation-branch
+                </span>
+                <h3 className="mt-4 font-headline text-2xl font-extrabold leading-tight text-on-surface">
                   {identifiedPerson}
                 </h3>
                 <button
                   onClick={handleNotThisPerson}
-                  className="text-xs text-primary hover:underline font-bold mb-4 block"
+                  className="mb-4 mt-1 block text-xs font-bold text-primary hover:underline"
                 >
                   Not {identifiedPerson}? Re-Register
                 </button>
-                <div className="space-y-4">
+                <div className="rounded-2xl bg-surface-container-low p-4">
                   <div className="flex items-start gap-3">
-                    <div className="bg-blue-100 p-2 rounded-full flex-shrink-0">
-                      <span className="material-symbols-outlined text-blue-700 text-xl">memory</span>
+                    <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-primary-fixed">
+                      <span className="material-symbols-outlined text-xl text-on-primary-fixed-variant">memory</span>
                     </div>
                     <div>
-                      <p className="text-on-surface-variant text-[10px] font-bold uppercase tracking-wider">Retrieved Context</p>
-                      <p className="text-base font-medium text-on-surface leading-tight">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Retrieved Context</p>
+                      <p className="mt-1 text-sm font-semibold leading-relaxed text-on-surface">
                         {contextData || "Scanning memories..."}
                       </p>
                     </div>
@@ -660,16 +865,17 @@ export default function LivingRoom() {
                 </div>
               </div>
             ) : (
-              // 3. Show this when NO ONE is detected
-              <div className="flex flex-col items-center justify-center h-48 opacity-50">
-                <span className="material-symbols-outlined text-5xl mb-2 text-gray-400">
+              <div className="flex h-44 flex-col items-center justify-center text-center">
+                <span className="material-symbols-outlined mb-2 text-5xl text-outline">
                   person_off
                 </span>
-                <p className="text-center font-bold text-gray-500">No One in Frame</p>
+                <p className="font-headline text-lg font-extrabold text-on-surface">No one in frame</p>
+                <p className="mt-1 text-sm text-on-surface-variant">Recognition will begin once a face appears.</p>
               </div>
             )}
           </div>
 
+<<<<<<< HEAD
           {/* Transcript Monitor */}
           <div className="flex-1 bg-surface-container-low p-6 rounded-lg flex flex-col gap-4 border border-outline-variant/5 min-h-0 relative overflow-hidden">
             <div className="flex items-center justify-between">
@@ -737,6 +943,18 @@ export default function LivingRoom() {
               <p className="text-gray-400 text-[9px] mt-2 italic">
                 If distance &gt; 0.6 = too far. Saved '—' = DB load failed. Live '—' = no face yet.
               </p>
+=======
+          <div className="flex min-h-0 flex-1 flex-col gap-4 rounded-2xl border border-outline-variant/20 bg-surface-container-low p-5">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-lg text-on-surface-variant">mic</span>
+              <h4 className="text-[11px] font-bold uppercase tracking-widest text-on-surface-variant">Audio Monitor</h4>
+            </div>
+            <div className="flex flex-1 items-center justify-center rounded-2xl border border-dashed border-outline-variant/50 bg-surface-container-lowest/70 p-5 text-center">
+              <div>
+                <p className="font-headline text-lg font-extrabold text-on-surface">Awaiting audio</p>
+                <p className="mt-1 text-sm text-on-surface-variant">Conversation cues will appear here.</p>
+              </div>
+>>>>>>> face-differentiation-branch
             </div>
           </div>
         </section>

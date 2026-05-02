@@ -1,8 +1,8 @@
 export default function Footer({ collapsed }) {
   return (
     <footer
-      className={`fixed bottom-0 right-0 h-12 bg-blue-50 dark:bg-slate-900 flex justify-end items-center px-12 gap-8 z-40 transition-all duration-300 border-t border-blue-100/30 ${
-        collapsed ? 'w-[calc(100%-5rem)]' : 'w-[calc(100%-18rem)]'
+      className={`fixed bottom-0 right-0 h-10 bg-surface-container-lowest/90 dark:bg-slate-950/90 backdrop-blur-xl flex justify-end items-center px-8 gap-5 z-40 transition-all duration-300 border-t border-outline-variant/20 ${
+        collapsed ? 'w-[calc(100%-5rem)]' : 'w-[calc(100%-16rem)]'
       }`}
     >
       <div className="flex items-center gap-2 text-emerald-600 font-bold font-inter text-xs tracking-widest uppercase">
