@@ -41,7 +41,8 @@ export default function Login() {
       }
 
       localStorage.setItem("token", data.token);
-      navigate("/");
+      localStorage.setItem("userName", data.user.name);
+      navigate("/dashboard");
 
     } catch (error) {
       alert(error.message);

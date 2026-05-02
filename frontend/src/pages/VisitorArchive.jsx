@@ -72,7 +72,7 @@ export default function VisitorArchive() {
           {/* ➕ ADD BUTTON */}
           <button
             onClick={() => setShowForm(true)}
-            className="bg-primary text-white p-2 rounded-full shadow-md hover:bg-primary/90"
+            className="flex items-center justify-center w-12 h-12 bg-primary text-white rounded-full shadow-md hover:bg-primary/90 transition-all"
           >
             <span className="material-symbols-outlined">add</span>
           </button>

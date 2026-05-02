@@ -5,16 +5,18 @@ import TopAppBar from './TopAppBar';
 import Footer from './Footer';
 
 export default function Layout() {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const location = useLocation();
 
-  let title = 'Context-Lens';
+  let title = 'RememberMe';
   if (location.pathname === '/') {
     title = 'Living Room Sanctuary';
-  } else if (location.pathname === '/visitors') {
+  } else if (location.pathname === '/dashboard/visitors') {
     title = 'Visitors Archive';
-  } else if (location.pathname === '/voice') {
+  } else if (location.pathname === '/dashboard/voice') {
     title = 'Voice Interface';
+  } else if (location.pathname === '/dashboard/profile') {
+    title = 'Profile';
   }
 
   return (
@@ -24,7 +26,7 @@ export default function Layout() {
       <div className={`flex-1 flex flex-col transition-all duration-300 ${collapsed ? 'ml-20' : 'ml-64'}`}>
         <TopAppBar collapsed={collapsed} title={title} />
 
-        <main className="flex-1 pt-20 pb-10 overflow-x-hidden">
+        <main className="flex-1 pt-28 pb-10 overflow-x-hidden">
           <Outlet />
         </main>
 
