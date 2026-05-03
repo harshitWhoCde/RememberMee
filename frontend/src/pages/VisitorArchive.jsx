@@ -5,15 +5,14 @@ export default function VisitorArchive() {
   const [memories, setMemories] = useState([]);
   const [selectedVisitor, setSelectedVisitor] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [newVisitorName, setNewVisitorName] = useState('');
-  const [newVisitorRelation, setNewVisitorRelation] = useState('');
 
   // 2. Fetch data from your backend when the page loads
   useEffect(() => {
     const fetchMemories = async () => {
       try {
-        const res = await fetch('http://localhost:5000/api/memories');
+        const res = await fetch('http://localhost:5000/api/memories', {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
         const data = await res.json();
 
         if (data.success && data.data.length > 0) {
@@ -56,6 +55,10 @@ export default function VisitorArchive() {
     return new Date(dateString).toLocaleDateString('en-US', options);
   };
 
+  const getMemoryText = (memory) => (
+    memory.lastConversation?.trim() || memory.event || "No conversation saved yet."
+  );
+
   if (loading) {
     return <div className="px-12 py-10 text-2xl text-slate-500">Loading memories...</div>;
   }
@@ -69,13 +72,6 @@ export default function VisitorArchive() {
             Recent Visitors
           </h3>
 
-          {/* ➕ ADD BUTTON */}
-          <button
-            onClick={() => setShowForm(true)}
-            className="flex items-center justify-center w-12 h-12 bg-primary text-white rounded-full shadow-md hover:bg-primary/90 transition-all"
-          >
-            <span className="material-symbols-outlined">add</span>
-          </button>
         </div>
         <div className="space-y-4">
 
@@ -139,10 +135,15 @@ export default function VisitorArchive() {
                     {/* Make the most recent event stand out with a primary color dot */}
                     <div className={`absolute left-0 top-2 w-6 h-6 rounded-full ring-4 ring-white shadow-sm z-10 ${index === 0 ? "bg-primary" : "bg-slate-300"}`}></div>
                     <div className="space-y-2">
-                      <time className="text-xl font-bold text-on-surface">{formatDate(memory.createdAt)}</time>
+                      <time className="text-xl font-bold text-on-surface">{formatDate(memory.updatedAt || memory.createdAt)}</time>
                       <div className={`p-6 rounded-lg ${index === 0 ? "bg-slate-100 border-l-8 border-primary" : "bg-slate-50 opacity-80"}`}>
-                        <p className="text-xl leading-relaxed text-slate-700 capitalize">
-                          "{memory.event}"
+                        {memory.lastConversation?.trim() && (
+                          <p className="mb-2 text-xs font-bold uppercase tracking-wider text-primary">
+                            Previous conversation
+                          </p>
+                        )}
+                        <p className="text-xl leading-relaxed text-slate-700">
+                          "{getMemoryText(memory)}"
                         </p>
                       </div>
                     </div>

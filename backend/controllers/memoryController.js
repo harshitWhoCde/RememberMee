@@ -1,28 +1,72 @@
 const Memory = require('../models/Memory');
+const fetch = global.fetch || require('node-fetch');
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const buildNameFilter = (name) => ({
+  name: new RegExp(`^${escapeRegExp(name.trim())}$`, 'i')
+});
+
+const buildFallbackSummary = (name, transcript) => {
+  const cleanedTranscript = transcript.replace(/\s+/g, ' ').trim();
+  if (cleanedTranscript.length <= 220) {
+    return `You and ${name} talked about ${cleanedTranscript}`;
+  }
+
+  return `You and ${name} talked about ${cleanedTranscript.slice(0, 217)}...`;
+};
 
 const addMemory = async (req, res) => {
   try {
     const { text, name, relation, faceDescriptor } = req.body;
-    
+
     // Defaulting event logic from previous mock implementation if raw text is provided
     const event = text || `${name} is my ${relation} and they are visiting me today.`;
-    
-    const newMemory = new Memory({ name, relation, event, faceDescriptor });
+
+    // Safely check for user ID without crashing
+    const userId = (req.user && req.user.id) ? req.user.id : null;
+
+    const newMemory = new Memory({
+      name,
+      relation,
+      event,
+      faceDescriptor,
+      ownerId: userId // Will safely be null if no user is logged in
+    });
     await newMemory.save();
-    
+
     res.status(201).json({ success: true, memory: newMemory });
   } catch (error) {
-    console.error("Error in addMemory:", error);
-    res.status(500).json({ success: false, error: "Failed to add memory" });
+    console.error("🚨 BACKEND CRASH:", error.message);
+    // Actually send the error message to the frontend so Chrome can see it
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
 const getMemories = async (req, res) => {
   try {
-    const memories = await Memory.find().sort({ createdAt: -1 });
+    const memories = await Memory.find().sort({ updatedAt: -1, createdAt: -1 });
     res.json({ success: true, data: memories });
   } catch (error) {
     res.status(500).json({ success: false, error: "Failed to fetch memories" });
+  }
+};
+
+const getMemoryByName = async (req, res) => {
+  try {
+    const visitorName = decodeURIComponent(req.params.name || '').trim();
+    const memory = await Memory.findOne(buildNameFilter(visitorName)).sort({ updatedAt: -1, createdAt: -1 });
+
+    if (memory) {
+      // Use lastConversation if it exists, otherwise fallback to the old 'event' field
+      const contextText = memory.lastConversation || memory.event || "No previous memory recorded.";
+      res.json({ success: true, lastConversation: contextText });
+    } else {
+      res.json({ success: true, lastConversation: "This is your first time recording a memory here." });
+    }
+  } catch (error) {
+    console.error("🚨 Server Error:", error.message);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
@@ -30,47 +74,71 @@ const updateConversationContext = async (req, res) => {
   try {
     const { name, transcript } = req.body;
 
-    if (!name || !transcript) {
+    if (!name?.trim() || !transcript?.trim()) {
       return res.status(400).json({ success: false, error: "Name and transcript are required" });
     }
 
-    const prompt = `You are an AI assistant for a dementia patient. Summarize the following conversation transcript between the patient and their visitor into a single, concise sentence that captures the key topic discussed. Transcript: "${transcript}"`;
+    const visitorName = name.trim();
+    const cleanedTranscript = transcript.trim();
+    const prompt = `You are a memory assistant for a dementia patient. Summarize the following conversation transcript between the patient and their visitor (${visitorName}) into a single, warm, comforting sentence. Focus on the main topic they discussed so the patient can remember it next time. Transcript: "${cleanedTranscript}"`;
 
-    const response = await fetch('http://localhost:11434/api/generate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'llama3',
-        prompt: prompt,
-        stream: false
-      })
-    });
+    let summary = "";
 
-    const data = await response.json();
-    const summary = data.response;
+    try {
+      const response = await fetch('http://localhost:11434/api/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'llama3',
+          prompt,
+          stream: false
+        })
+      });
 
-    // Find the latest memory for this visitor and update the event with the summary
+      if (!response.ok) {
+        throw new Error(`Ollama returned ${response.status}`);
+      }
+
+      const data = await response.json();
+      summary = (data.response || "").trim();
+    } catch (summaryError) {
+      console.warn("Summary generation failed, saving fallback memory:", summaryError.message);
+    }
+
+    if (!summary) {
+      summary = buildFallbackSummary(visitorName, cleanedTranscript);
+    }
+
+    // Keep event in sync because the archive displays event cards.
     const updatedMemory = await Memory.findOneAndUpdate(
-      { name: name },
-      { event: summary },
-      { new: true, sort: { createdAt: -1 } }
+      buildNameFilter(visitorName),
+      {
+        $set: {
+          lastConversation: summary,
+          event: summary,
+          updatedAt: new Date()
+        }
+      },
+      { new: true, sort: { updatedAt: -1, createdAt: -1 } }
     );
 
     if (!updatedMemory) {
-      return res.status(404).json({ success: false, error: "Visitor not found" });
+      console.error("🚨 SILENT FAILURE: No user found in DB with name:", visitorName);
+      return res.status(404).json({ success: false, message: "Face not found in DB." });
     }
 
     res.json({ success: true, memory: updatedMemory });
   } catch (error) {
-    console.error("Error in updateConversationContext:", error);
-    res.status(500).json({ success: false, error: "Failed to update context" });
+    console.error("🚨 Server Error:", error.message);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
 module.exports = {
   addMemory,
   getMemories,
-  updateConversationContext
+  updateConversationContext,
+  getMemoryByName
 };

@@ -8,7 +8,7 @@ const sanitizeDescriptor = (descriptorString) => {
   let parts = descriptorString.split(',').map(Number);
 
   // 2. Check if the first number is huge (like 358924544)
-  // Descriptors MUST be between -1 and 1. 
+  // Descriptors MUST be between -1 and 1.
   if (Math.abs(parts[0]) > 10) {
     // If it's a billion-scale number, we shift the decimal point 9 places
     return new Float32Array(parts.map(val => val / 1000000000));
@@ -30,6 +30,13 @@ export default function LivingRoom() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [identifiedPerson, setIdentifiedPerson] = useState(null);
   const [contextData, setContextData] = useState(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const sessionActiveRef = useRef(false);
+  const cooldownRef = useRef(false);
+  const recognitionRef = useRef(null);
+  const [voiceStateSynced, setVoiceStateSynced] = useState("idle");
+  const voiceStateRef = useRef("idle");
+  const [conversationTranscript, setConversationTranscript] = useState("");
 
   // New states for Unknown Visitor Registration
   const [isUnknownFace, setIsUnknownFace] = useState(false);
@@ -40,7 +47,9 @@ export default function LivingRoom() {
 
   const initializeFaceMatcher = async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/memories');
+      const res = await fetch('http://localhost:5000/api/memories', {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
       if (res.ok) {
         const json = await res.json();
         if (json.success && Array.isArray(json.data)) {
@@ -113,6 +122,9 @@ export default function LivingRoom() {
     setIdentifiedPerson(null);
     identifiedPersonRef.current = null;
     setIsUnknownFace(false);
+    voiceStateRef.current = "idle";
+    setVoiceStateSynced("idle");
+    sessionActiveRef.current = false;
   };
 
   useEffect(() => {
@@ -171,7 +183,10 @@ export default function LivingRoom() {
         "http://localhost:5000/api/match-face",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${localStorage.getItem('token')}`
+          },
           body: JSON.stringify({ embedding: data.embedding }),
         }
       );
@@ -182,9 +197,14 @@ export default function LivingRoom() {
 
       // 4️⃣ Handle result
       if (matchData.found) {
+        sessionActiveRef.current = true; // LOCK THE LOOP
         setIdentifiedPerson(matchData.name);
         identifiedPersonRef.current = matchData.name;
         fetchContextFromBackend(matchData.name);
+
+        if (voiceStateRef.current === "idle") {
+            startContinuousListening();
+        }
       } else if (matchData.isUnknown) {
         setIsUnknownFace(true);
         isUnknownFaceRef.current = true;
@@ -197,7 +217,71 @@ export default function LivingRoom() {
       identifiedPersonRef.current = null;
     }
   };
+
+  const startContinuousListening = () => {
+    if (voiceStateRef.current === "recordingContext") {
+        console.log("Mic is already running, ignoring duplicate start request.");
+        return;
+    }
+    console.log("🎙️ Attempting to start continuous listening...");
+    setVoiceStateSynced("recordingContext");
+    voiceStateRef.current = "recordingContext";
+    setConversationTranscript("");
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        console.error("❌ Speech Recognition not supported in this browser.");
+        return;
+    }
+
+    recognitionRef.current = new SpeechRecognition();
+    recognitionRef.current.continuous = true;
+    recognitionRef.current.interimResults = true;
+
+    recognitionRef.current.onstart = () => console.log("🟢 Microphone is LIVE and listening.");
+    recognitionRef.current.onerror = (event) => {
+        console.error("🚨 Microphone Error:", event.error);
+        if (event.error === 'not-allowed' || event.error === 'aborted') {
+            setVoiceStateSynced("idle");
+            voiceStateRef.current = "idle";
+        }
+    };
+
+    recognitionRef.current.onresult = (event) => {
+        let finalTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+                finalTranscript += event.results[i][0].transcript + " ";
+            }
+        }
+        if (finalTranscript) {
+            setConversationTranscript(prev => prev + finalTranscript);
+        }
+    };
+
+    recognitionRef.current.onend = () => {
+        console.log("🔴 Microphone stopped.");
+        if (voiceStateRef.current === "recordingContext") {
+             console.log("Restarting microphone in 500ms...");
+             setTimeout(() => {
+                 try {
+                     if (recognitionRef.current) recognitionRef.current.start();
+                 } catch (e) {
+                     console.error("Failed to restart mic:", e);
+                 }
+             }, 500);
+        }
+    };
+
+    try {
+        recognitionRef.current.start();
+    } catch (err) {
+        console.error("Error starting recognition:", err);
+    }
+  };
+
   // 3. The Real-Time Face Tracking Loop
+
 
 
   const handleVideoOnPlay = () => {
@@ -206,6 +290,21 @@ export default function LivingRoom() {
     intervalRef.current = setInterval(async () => {
       // ✅ REMOVED 'identifiedPerson' from the block list so the loop keeps drawing boxes
       if (!isCameraOn || isInitializing) return;
+
+      if (cooldownRef.current) {
+          // Clear the canvas boxes so the UI looks inactive
+          const ctx = canvasRef.current.getContext('2d');
+          ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+          return;
+      }
+
+      if (sessionActiveRef.current) {
+          // Clear the canvas boxes so it looks clean, and pause detection
+          const ctx = canvasRef.current.getContext('2d');
+          ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+          return;
+      }
+      if (identifiedPersonRef.current || isUnknownFaceRef.current) return;
 
       const detections = await faceapi.detectAllFaces(
         videoRef.current,
@@ -286,14 +385,12 @@ export default function LivingRoom() {
 
       console.log("Registering visitor: Saving to database...");
       // 2. Save to MERN Backend
-      // Convert embedding array to comma-separated string for Mongoose compatibility
-      const descriptorString = Array.isArray(embedData.embedding)
-        ? embedData.embedding.join(',')
-        : String(embedData.embedding);
-
       const res = await fetch('http://localhost:5000/api/memory', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
         body: JSON.stringify({
           name: newVisitorName,
           relation: newVisitorRelation,
@@ -311,6 +408,7 @@ export default function LivingRoom() {
 
         setIdentifiedPerson(newVisitorName);
         identifiedPersonRef.current = newVisitorName;
+        sessionActiveRef.current = true;
 
         // Reload matcher so the new person is recognized immediately next time
         initializeFaceMatcher();
@@ -329,17 +427,82 @@ export default function LivingRoom() {
   // 4. Fetch the Context from your Node.js Backend
   const fetchContextFromBackend = async (name) => {
     try {
-      const res = await fetch('http://localhost:5000/api/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: `Who is ${name}?` }),
+      const res = await fetch(`http://localhost:5000/api/memory/${encodeURIComponent(name)}`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
       });
       const data = await res.json();
       if (data.success) {
-        setContextData(data.response); // e.g., "Rahul is your son. You played chess."
+        setContextData(data.lastConversation);
       }
-    } catch {
-      console.error("Backend offline");
+    } catch (error) {
+      console.error("Failed to fetch past context:", error);
+    }
+  };
+
+  const saveConversationContext = async (transcript) => {
+    if (!identifiedPerson) return;
+    if (!transcript || !transcript.trim()) {
+        console.log("No text to save.");
+        return;
+    }
+
+    console.log("💾 Initiating Save Sequence...");
+    setIsSummarizing(true);
+
+    // 1. Force the microphone to stop safely before saving
+    if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch(e) {}
+    }
+    setVoiceStateSynced("idle");
+
+    // 2. Put the camera on a strict Cooldown so it ignores the user while saving
+    cooldownRef.current = true;
+
+    try {
+      const res = await fetch('http://localhost:5000/api/update-context', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({
+          name: identifiedPersonRef.current, // CRITICAL: This must not be null!
+          transcript: transcript
+        })
+      });
+
+      if (!res.ok) {
+          const errorData = await res.json();
+          console.error("🚨 BACKEND SAVE FAILED:", errorData);
+          setIsSummarizing(false);
+          return;
+      }
+
+      const data = await res.json();
+      if (data.success && data.memory && data.memory.lastConversation) {
+        setContextData(data.memory.lastConversation);
+      }
+
+      console.log("✅ SAVED TO DB SUCCESSFULLY!");
+    } catch (error) {
+      console.error("Error saving conversation context:", error);
+    } finally {
+      setIsSummarizing(false);
+
+      // 3. Reset the session, but KEEP the cooldown active for 5 seconds
+      sessionActiveRef.current = false;
+      setIdentifiedPerson(null);
+      identifiedPersonRef.current = null;
+      setConversationTranscript("");
+      voiceStateRef.current = "idle";
+
+      console.log("⏳ Room resetting. 5 second cooldown initiated...");
+      setTimeout(() => {
+          console.log("🟢 Cooldown finished. Camera is active again.");
+          cooldownRef.current = false;
+      }, 5000); // 5 seconds to walk away
     }
   };
 
@@ -347,6 +510,7 @@ export default function LivingRoom() {
     setIdentifiedPerson(null);
     identifiedPersonRef.current = null;
     setContextData(null);
+    sessionActiveRef.current = false;
 
     // Force the unknown state to true
     setIsUnknownFace(true);
@@ -358,13 +522,15 @@ export default function LivingRoom() {
 
   const recognitionState = isInitializing
     ? 'Loading models'
-    : isUnknownFace
-      ? 'New visitor'
-      : identifiedPerson
-        ? 'Recognized'
-        : isCameraOn
-          ? 'Scanning'
-          : 'Standby';
+    : isSummarizing
+      ? 'Summarizing Memory...'
+      : isUnknownFace
+        ? 'New visitor'
+        : identifiedPerson
+          ? 'Recognized'
+          : isCameraOn
+            ? 'Scanning'
+            : 'Standby';
 
   return (
     <div className="h-full px-6 lg:px-8">
@@ -519,7 +685,7 @@ export default function LivingRoom() {
                       <span className="material-symbols-outlined text-xl text-on-primary-fixed-variant">memory</span>
                     </div>
                     <div>
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Retrieved Context</p>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Retrieved Memory</p>
                       <p className="mt-1 text-sm font-semibold leading-relaxed text-on-surface">
                         {contextData || "Scanning memories..."}
                       </p>
@@ -545,8 +711,32 @@ export default function LivingRoom() {
             </div>
             <div className="flex flex-1 items-center justify-center rounded-2xl border border-dashed border-outline-variant/50 bg-surface-container-lowest/70 p-5 text-center">
               <div>
-                <p className="font-headline text-lg font-extrabold text-on-surface">Awaiting audio</p>
-                <p className="mt-1 text-sm text-on-surface-variant">Conversation cues will appear here.</p>
+                {voiceStateSynced === "recordingContext" ? (
+                  <>
+                    <p className="font-headline text-lg font-extrabold text-on-surface">Listening...</p>
+                    <p className="mt-2 text-sm text-on-surface-variant max-h-32 overflow-y-auto italic">
+                      {conversationTranscript || "Say something..."}
+                    </p>
+                    {identifiedPerson && (
+                      <button
+                        onClick={() => {
+                          voiceStateRef.current = "idle";
+                          setVoiceStateSynced("idle");
+                          saveConversationContext(conversationTranscript);
+                        }}
+                        disabled={isSummarizing || !conversationTranscript}
+                        className="mt-4 rounded-xl bg-primary px-4 py-2 text-sm font-bold text-on-primary hover:bg-primary/90 disabled:opacity-50"
+                      >
+                        {isSummarizing ? "Summarizing..." : "End Conversation & Save"}
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <p className="font-headline text-lg font-extrabold text-on-surface">Awaiting audio</p>
+                    <p className="mt-1 text-sm text-on-surface-variant">Conversation cues will appear here.</p>
+                  </>
+                )}
               </div>
             </div>
           </div>
