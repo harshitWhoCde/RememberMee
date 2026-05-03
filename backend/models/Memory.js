@@ -5,7 +5,10 @@ const memorySchema = new mongoose.Schema({
   relation: { type: String },
   // 'event' can store the auto-generated text (e.g., "Rishi is my son")
   event: { type: String, required: true },
-  faceDescriptor: { type: String, required: false },
+  faceDescriptor: {
+    type: [Number],
+    required: true
+  },
   createdAt: { type: Date, default: Date.now }
 });
 

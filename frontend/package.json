@@ -12,6 +12,7 @@
   "dependencies": {
     "@tensorflow/tfjs": "^4.22.0",
     "@vladmandic/face-api": "^1.7.15",
+    "face-api.js": "^0.22.2",
     "gsap": "^3.15.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

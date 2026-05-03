@@ -26,12 +26,17 @@ export default function Login() {
     setIsSubmitting(true);
 
     try {
+      const loginForm = {
+        ...form,
+        email: form.email.toLowerCase().trim()
+      };
+
       const res = await fetch("http://localhost:5000/api/auth/login", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(form),
+        body: JSON.stringify(loginForm),
       });
 
       const data = await res.json();

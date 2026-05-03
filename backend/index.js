@@ -123,6 +123,8 @@ app.post("/recognize", upload.single("file"), async (req, res) => {
     // ✅ NEW USER
     const newUser = await User.create({
       name: "Unknown",
+      email: `unknown-${Date.now()}@face.com`, // Dummy email to satisfy schema
+      password: "dummy-password", // Dummy password to satisfy schema
       embeddings: [embedding],
       notes: "New person",
     });
