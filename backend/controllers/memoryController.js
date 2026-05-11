@@ -59,7 +59,10 @@ const getMemoryByName = async (req, res) => {
 
     if (memory) {
       // Use lastConversation if it exists, otherwise fallback to the old 'event' field
-      const contextText = memory.lastConversation || memory.event || "No previous memory recorded.";
+      const contextText =
+        memory.context ||
+        memory.event ||
+        "No previous memory recorded.";
       res.json({ success: true, lastConversation: contextText });
     } else {
       res.json({ success: true, lastConversation: "This is your first time recording a memory here." });
@@ -80,8 +83,11 @@ const updateConversationContext = async (req, res) => {
 
     const visitorName = name.trim();
     const cleanedTranscript = transcript.trim();
-    const prompt = `You are a memory assistant for a dementia patient. Summarize the following conversation transcript between the patient and their visitor (${visitorName}) into a single, warm, comforting sentence. Focus on the main topic they discussed so the patient can remember it next time. Transcript: "${cleanedTranscript}"`;
+    const prompt = `now summarize this conversation Transcript:
+    ${cleanedTranscript} as you are explaning this to User as this conversation happened earlier in between Visitor Name:
+    ${visitorName} and himself(patient user) in 2 lines only`;
 
+    // console.log("🚀 Sending to Ollama:", prompt);
     let summary = "";
 
     try {
@@ -91,7 +97,7 @@ const updateConversationContext = async (req, res) => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'llama3',
+          model: 'phi3',
           prompt,
           stream: false
         })
@@ -116,8 +122,15 @@ const updateConversationContext = async (req, res) => {
       buildNameFilter(visitorName),
       {
         $set: {
-          lastConversation: summary,
+          // FULL STT CONVERSATION
+          lastConversation: cleanedTranscript,
+
+          // AI GENERATED MEMORY
+          context: summary,
+
+          // OPTIONAL
           event: summary,
+
           updatedAt: new Date()
         }
       },

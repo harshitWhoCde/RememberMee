@@ -183,7 +183,10 @@ app.post("/api/match-face", async (req, res) => {
 
     let bestMatch = null;
     let bestScore = 0;
-    const threshold = 0.75;
+    
+    // Updated threshold for ArcFace (InsightFace). ArcFace provides higher inter-class variance,
+    // so the cosine similarity threshold is typically much lower than Facenet. ~0.45 is optimal.
+    const threshold = 0.45;
 
     for (let person of allPeople) {
       let targetEmbeddings = [];

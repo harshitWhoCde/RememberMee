@@ -1,21 +1,29 @@
 import { useRef, useEffect, useState } from 'react';
 import * as faceapi from 'face-api.js';
 
-const sanitizeDescriptor = (descriptorString) => {
-  if (!descriptorString) return null;
+const sanitizeDescriptor = (descriptor) => {
+  if (!descriptor) return null;
 
-  // 1. Convert to numbers
-  let parts = descriptorString.split(',').map(Number);
+  // 1. Convert to numbers (handle string or array)
+  let parts;
+  if (Array.isArray(descriptor)) {
+    parts = descriptor.map(Number);
+  } else if (typeof descriptor === 'string') {
+    parts = descriptor.split(',').map(Number);
+  } else {
+    return null;
+  }
 
   // 2. Check if the first number is huge (like 358924544)
   // Descriptors MUST be between -1 and 1.
-  if (Math.abs(parts[0]) > 10) {
+  if (parts.length > 0 && Math.abs(parts[0]) > 10) {
     // If it's a billion-scale number, we shift the decimal point 9 places
     return new Float32Array(parts.map(val => val / 1000000000));
   }
 
   return new Float32Array(parts);
 };
+
 
 export default function LivingRoom() {
   const lastCallRef = useRef(0);
@@ -33,10 +41,16 @@ export default function LivingRoom() {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const sessionActiveRef = useRef(false);
   const cooldownRef = useRef(false);
-  const recognitionRef = useRef(null);
+  // WebSocket STT refs (replaces SpeechRecognition)
+  const wsRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const audioStreamRef = useRef(null);
+  const wsReconnectTimerRef = useRef(null);
   const [voiceStateSynced, setVoiceStateSynced] = useState("idle");
   const voiceStateRef = useRef("idle");
   const [conversationTranscript, setConversationTranscript] = useState("");
+  const finalTranscriptRef = useRef("");
+  const transcriptUpdateTimeoutRef = useRef(null);
 
   // New states for Unknown Visitor Registration
   const [isUnknownFace, setIsUnknownFace] = useState(false);
@@ -111,6 +125,7 @@ export default function LivingRoom() {
       }
     })
       .then((stream) => {
+        console.log("MIC ACTIVE:", stream);
         videoRef.current.srcObject = stream;
         streamRef.current = stream;
       });
@@ -133,7 +148,7 @@ export default function LivingRoom() {
   }, [isCameraOn]);
 
   // --- HYBRID VERIFICATION LOGIC ---
-  const verifyWithDeepFace = async () => {
+  const verifyWithInsightFace = async () => {
     if (!videoRef.current) return;
 
     const canvas = document.createElement("canvas");
@@ -149,7 +164,7 @@ export default function LivingRoom() {
     formData.append("file", blob);
 
     try {
-      // 1️⃣ Get embedding from DeepFace
+      // 1️⃣ Get embedding from InsightFace
       const response = await fetch("http://localhost:8000/embed", {
         method: "POST",
         body: formData,
@@ -161,7 +176,7 @@ export default function LivingRoom() {
       try {
         data = JSON.parse(text);
       } catch {
-        console.error("❌ Not JSON from DeepFace:", text);
+        console.error("❌ Not JSON from InsightFace:", text);
         return;
       }
 
@@ -170,7 +185,7 @@ export default function LivingRoom() {
         return;
       }
 
-      console.log("DeepFace Embedding Received:", data.embedding);
+      console.log("InsightFace Embedding Received:", data.embedding);
 
       // 2️⃣ Throttle API calls
       // eslint-disable-next-line react-hooks/purity
@@ -197,13 +212,16 @@ export default function LivingRoom() {
 
       // 4️⃣ Handle result
       if (matchData.found) {
-        sessionActiveRef.current = true; // LOCK THE LOOP
         setIdentifiedPerson(matchData.name);
         identifiedPersonRef.current = matchData.name;
+
         fetchContextFromBackend(matchData.name);
 
-        if (voiceStateRef.current === "idle") {
-            startContinuousListening();
+        if (voiceStateRef.current === "idle" && !wsRef.current) {
+          // Allow microphone stream to stabilize first
+          setTimeout(() => {
+            startWhisperListening();
+          }, 1500);
         }
       } else if (matchData.isUnknown) {
         setIsUnknownFace(true);
@@ -213,71 +231,167 @@ export default function LivingRoom() {
         identifiedPersonRef.current = null;
       }
     } catch (err) {
-      console.error("DeepFace verification failed:", err);
+      console.error("InsightFace verification failed:", err);
       identifiedPersonRef.current = null;
     }
   };
 
-  const startContinuousListening = () => {
-    if (voiceStateRef.current === "recordingContext") {
-        console.log("Mic is already running, ignoring duplicate start request.");
-        return;
+  // ─────────────────────────────────────────────────────────────────────────
+  // FASTER-WHISPER STT  (replaces SpeechRecognition entirely)
+  // Architecture: MediaRecorder → raw PCM chunks → WebSocket → FastAPI
+  //               → Faster-Whisper → partial/final JSON → React state
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const STT_WS_URL = "ws://localhost:8000/ws/stt";
+  // We send 16-bit PCM at 16 kHz mono.  MediaRecorder natively gives WebM/Opus,
+  // so we decode with an AudioContext + ScriptProcessorNode to get raw PCM.
+  const AUDIO_SAMPLE_RATE = 16000;
+  const SCRIPT_BUFFER_SIZE = 4096; // samples per ScriptProcessor callback
+
+  const stopWhisperListening = () => {
+    console.log("🛑 Stopping Whisper STT...");
+
+    // Stop ScriptProcessorNode audio capture
+    if (mediaRecorderRef.current) {
+      try { mediaRecorderRef.current.disconnect(); } catch (_) { }
+      mediaRecorderRef.current = null;
     }
-    console.log("🎙️ Attempting to start continuous listening...");
-    setVoiceStateSynced("recordingContext");
-    voiceStateRef.current = "recordingContext";
+    // Close AudioContext
+    if (audioStreamRef.current) {
+      try { audioStreamRef.current.close(); } catch (_) { }
+      audioStreamRef.current = null;
+    }
+    // Close WebSocket
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch (_) { }
+      wsRef.current = null;
+    }
+    // Cancel any pending reconnect
+    if (wsReconnectTimerRef.current) {
+      clearTimeout(wsReconnectTimerRef.current);
+      wsReconnectTimerRef.current = null;
+    }
+  };
+
+  const startWhisperListening = async () => {
+    if (voiceStateRef.current === "recordingContext" || wsRef.current) return;
+    console.log("🎙️ Starting Faster-Whisper STT via WebSocket...");
+
+    // Reset transcript for new session
+    finalTranscriptRef.current = "";
     setConversationTranscript("");
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-        console.error("❌ Speech Recognition not supported in this browser.");
-        return;
-    }
-
-    recognitionRef.current = new SpeechRecognition();
-    recognitionRef.current.continuous = true;
-    recognitionRef.current.interimResults = true;
-
-    recognitionRef.current.onstart = () => console.log("🟢 Microphone is LIVE and listening.");
-    recognitionRef.current.onerror = (event) => {
-        console.error("🚨 Microphone Error:", event.error);
-        if (event.error === 'not-allowed' || event.error === 'aborted') {
-            setVoiceStateSynced("idle");
-            voiceStateRef.current = "idle";
-        }
-    };
-
-    recognitionRef.current.onresult = (event) => {
-        let finalTranscript = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-                finalTranscript += event.results[i][0].transcript + " ";
-            }
-        }
-        if (finalTranscript) {
-            setConversationTranscript(prev => prev + finalTranscript);
-        }
-    };
-
-    recognitionRef.current.onend = () => {
-        console.log("🔴 Microphone stopped.");
-        if (voiceStateRef.current === "recordingContext") {
-             console.log("Restarting microphone in 500ms...");
-             setTimeout(() => {
-                 try {
-                     if (recognitionRef.current) recognitionRef.current.start();
-                 } catch (e) {
-                     console.error("Failed to restart mic:", e);
-                 }
-             }, 500);
-        }
-    };
-
+    // ── 1. Request microphone (audio-only, optimised for speech) ──────────
+    let micStream;
     try {
-        recognitionRef.current.start();
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: AUDIO_SAMPLE_RATE,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
     } catch (err) {
-        console.error("Error starting recognition:", err);
+      console.error("🎤 Microphone access denied:", err);
+      return;
     }
+
+    // ── 2. Build AudioContext pipeline: mic → ScriptProcessor → PCM bytes ─
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: AUDIO_SAMPLE_RATE,
+    });
+    audioStreamRef.current = audioCtx;
+
+    const source = audioCtx.createMediaStreamSource(micStream);
+    const processor = audioCtx.createScriptProcessor(SCRIPT_BUFFER_SIZE, 1, 1);
+    mediaRecorderRef.current = processor;
+
+    // Queue chunks to send; will flush once WS is open
+    const pendingChunks = [];
+
+    processor.onaudioprocess = (evt) => {
+
+      const float32 = evt.inputBuffer.getChannelData(0);
+      // Convert float32 → int16 PCM
+      const int16 = new Int16Array(float32.length);
+      for (let i = 0; i < float32.length; i++) {
+        int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
+      }
+      const chunk = int16.slice().buffer;
+      console.log("Sending audio chunk:", chunk.byteLength);
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(chunk);
+      } else {
+        pendingChunks.push(chunk);
+      }
+    };
+
+    source.connect(processor);
+    processor.connect(audioCtx.destination);
+
+    // ── 3. Open WebSocket to FastAPI /ws/stt ─────────────────────────────
+    const openWs = () => {
+      const ws = new WebSocket(STT_WS_URL);
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log("✅ STT WebSocket open");
+        // Flush any buffered chunks
+        while (pendingChunks.length > 0) {
+          ws.send(pendingChunks.shift());
+        }
+        sessionActiveRef.current = true;
+        voiceStateRef.current = "recordingContext";
+        setVoiceStateSynced("recordingContext");
+      };
+
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if ((msg.type === "partial" || msg.type === "final") && msg.text) {
+            finalTranscriptRef.current = msg.text;
+            setConversationTranscript(msg.text);
+            console.log(`[STT ${msg.type}]`, msg.text);
+          }
+          if (msg.type === "silence") {
+            console.log("[STT] Silence detected by server");
+          }
+        } catch (_) { }
+      };
+
+      ws.onerror = (err) => {
+        console.error("STT WebSocket error:", err);
+      };
+
+      ws.onclose = (evt) => {
+        console.log("🔌 STT WebSocket closed:", evt.code, evt.reason);
+        wsRef.current = null;
+
+        // Auto-reconnect if session still active and person identified
+        if (
+          voiceStateRef.current === "recordingContext" &&
+          identifiedPersonRef.current &&
+          !cooldownRef.current
+        ) {
+          console.log("♻️ Reconnecting STT WebSocket in 1.5 s...");
+          wsReconnectTimerRef.current = setTimeout(openWs, 1500);
+        } else {
+          // No person left or session ended
+          if (!finalTranscriptRef.current.trim()) {
+            voiceStateRef.current = "idle";
+            setVoiceStateSynced("idle");
+            sessionActiveRef.current = false;
+          }
+        }
+      };
+    };
+
+    openWs();
   };
 
   // 3. The Real-Time Face Tracking Loop
@@ -292,19 +406,32 @@ export default function LivingRoom() {
       if (!isCameraOn || isInitializing) return;
 
       if (cooldownRef.current) {
-          // Clear the canvas boxes so the UI looks inactive
-          const ctx = canvasRef.current.getContext('2d');
-          ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-          return;
+        // Clear the canvas boxes so the UI looks inactive
+        if (!canvasRef.current) return;
+
+        const ctx = canvasRef.current.getContext('2d');
+
+        if (!ctx) return;
+        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        return;
       }
 
       if (sessionActiveRef.current) {
-          // Clear the canvas boxes so it looks clean, and pause detection
-          const ctx = canvasRef.current.getContext('2d');
-          ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-          return;
+        // Clear the canvas boxes so it looks clean, and pause detection
+        if (!canvasRef.current) return;
+
+        const ctx = canvasRef.current.getContext('2d');
+
+        if (!ctx) return;
+        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        return;
       }
-      if (identifiedPersonRef.current || isUnknownFaceRef.current) return;
+      if (
+        identifiedPersonRef.current ||
+        isUnknownFaceRef.current
+      ) {
+        return;
+      }
 
       const detections = await faceapi.detectAllFaces(
         videoRef.current,
@@ -331,10 +458,10 @@ export default function LivingRoom() {
       // ✅ LOGIC: If face exists AND we aren't currently showing a result/form
       if (detections.length > 0 && !identifiedPerson && !isUnknownFaceRef.current) {
         if (identifiedPersonRef.current !== "Verifying...") {
-          console.log("Face detected! Sending to DeepFace...");
+          console.log("Face detected! Sending to InsightFace...");
           console.log("Detections:", detections.length);
           identifiedPersonRef.current = "Verifying...";
-          verifyWithDeepFace();
+          verifyWithInsightFace();
         }
       }
 
@@ -348,7 +475,7 @@ export default function LivingRoom() {
   // New state for registration feedback
   const [isRegistering, setIsRegistering] = useState(false);
 
-  // --- REGISTRATION LOGIC ---
+  // --- ENHANCED REGISTRATION LOGIC (MULTI-FRAME AVERAGING) ---
   const handleRegisterVisitor = async (e) => {
     e.preventDefault();
     if (isRegistering) return;
@@ -358,30 +485,50 @@ export default function LivingRoom() {
     try {
       if (!videoRef.current) throw new Error("Video stream not available");
 
-      // Capture the face for the new embedding
-      const canvas = document.createElement("canvas");
-      canvas.width = videoRef.current.videoWidth;
-      canvas.height = videoRef.current.videoHeight;
-      canvas.getContext("2d").drawImage(videoRef.current, 0, 0);
+      console.log("Registering visitor: Capturing multiple frames for averaging...");
+      const embeddings = [];
+      const numFrames = 3;
 
-      const blob = await new Promise((res, rej) => {
-        canvas.toBlob((b) => {
-          if (b) res(b);
-          else rej(new Error("Failed to capture image from camera"));
-        }, 'image/jpeg', 0.95);
-      });
+      for (let i = 0; i < numFrames; i++) {
+        const canvas = document.createElement("canvas");
+        canvas.width = videoRef.current.videoWidth;
+        canvas.height = videoRef.current.videoHeight;
+        canvas.getContext("2d").drawImage(videoRef.current, 0, 0);
 
-      const formData = new FormData();
-      formData.append("file", blob);
+        const blob = await new Promise((res, rej) => {
+          canvas.toBlob((b) => {
+            if (b) res(b);
+            else rej(new Error("Failed to capture image from camera"));
+          }, 'image/jpeg', 0.95);
+        });
 
-      console.log("Registering visitor: Getting embedding...");
-      // 1. Get embedding from Python
-      const embedRes = await fetch("http://localhost:8000/embed", { method: "POST", body: formData });
-      const embedData = await embedRes.json();
+        const formData = new FormData();
+        formData.append("file", blob);
 
-      if (!embedData.success) {
-        throw new Error(embedData.error || "Failed to extract face features. Please look directly at the camera.");
+        console.log(`Getting embedding for frame ${i + 1}/${numFrames}...`);
+        const embedRes = await fetch("http://localhost:8000/embed", { method: "POST", body: formData });
+        const embedData = await embedRes.json();
+
+        if (embedData.success && embedData.embedding) {
+          embeddings.push(embedData.embedding);
+        } else {
+          console.warn(`Frame ${i + 1} failed: ${embedData.error}`);
+        }
+
+        // Wait 300ms before next capture to get slight facial variations
+        if (i < numFrames - 1) await new Promise(res => setTimeout(res, 300));
       }
+
+      if (embeddings.length === 0) {
+        throw new Error("Failed to extract stable face features. Please look directly at the camera and ensure good lighting.");
+      }
+
+      // Average the embeddings mathematically to create a highly stable anchor point
+      const averagedEmbedding = embeddings[0].map((_, colIndex) =>
+        embeddings.reduce((sum, row) => sum + row[colIndex], 0) / embeddings.length
+      );
+
+      console.log(`Successfully averaged ${embeddings.length} frames.`);
 
       console.log("Registering visitor: Saving to database...");
       // 2. Save to MERN Backend
@@ -394,7 +541,7 @@ export default function LivingRoom() {
         body: JSON.stringify({
           name: newVisitorName,
           relation: newVisitorRelation,
-          faceDescriptor: embedData.embedding,
+          faceDescriptor: averagedEmbedding,
           text: `${newVisitorName} is my ${newVisitorRelation}.`
         }),
       });
@@ -444,17 +591,15 @@ export default function LivingRoom() {
   const saveConversationContext = async (transcript) => {
     if (!identifiedPerson) return;
     if (!transcript || !transcript.trim()) {
-        console.log("No text to save.");
-        return;
+      console.log("No text to save.");
+      return;
     }
 
     console.log("💾 Initiating Save Sequence...");
     setIsSummarizing(true);
 
     // 1. Force the microphone to stop safely before saving
-    if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch(e) {}
-    }
+    stopWhisperListening();
     setVoiceStateSynced("idle");
 
     // 2. Put the camera on a strict Cooldown so it ignores the user while saving
@@ -474,10 +619,10 @@ export default function LivingRoom() {
       });
 
       if (!res.ok) {
-          const errorData = await res.json();
-          console.error("🚨 BACKEND SAVE FAILED:", errorData);
-          setIsSummarizing(false);
-          return;
+        const errorData = await res.json();
+        console.error("🚨 BACKEND SAVE FAILED:", errorData);
+        setIsSummarizing(false);
+        return;
       }
 
       const data = await res.json();
@@ -500,8 +645,8 @@ export default function LivingRoom() {
 
       console.log("⏳ Room resetting. 5 second cooldown initiated...");
       setTimeout(() => {
-          console.log("🟢 Cooldown finished. Camera is active again.");
-          cooldownRef.current = false;
+        console.log("🟢 Cooldown finished. Camera is active again.");
+        cooldownRef.current = false;
       }, 5000); // 5 seconds to walk away
     }
   };
@@ -722,6 +867,7 @@ export default function LivingRoom() {
                         onClick={() => {
                           voiceStateRef.current = "idle";
                           setVoiceStateSynced("idle");
+                          stopWhisperListening();
                           saveConversationContext(conversationTranscript);
                         }}
                         disabled={isSummarizing || !conversationTranscript}

@@ -10,6 +10,7 @@ const memorySchema = new mongoose.Schema({
   relation: { type: String },
   event: { type: String },
   lastConversation: { type: String, default: "" },
+  context: { type: String, default: "" }, // AI SUMMARY
   faceDescriptor: {
     type: [Number],
     required: true
