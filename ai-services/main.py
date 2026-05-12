@@ -63,9 +63,9 @@ except Exception as exc:
 # On RTX 3050 (4 GB VRAM) the model fits comfortably with int8.
 # On CPU (16 GB RAM) int8 is also ~3× faster than float32.
 # ---------------------------------------------------------------------------
-WHISPER_MODEL_SIZE = "small.en"
+WHISPER_MODEL_SIZE = "medium.en"
 SAMPLE_RATE = 16000          # Whisper expects 16 kHz mono PCM float32
-CHUNK_DURATION_S = 1.5       # seconds of audio per inference slice
+CHUNK_DURATION_S = 3.0       # seconds of audio per inference slice
 MIN_SPEECH_DURATION_S = 0.3  # discard chunks shorter than this (silence)
 SILENCE_TIMEOUT_S = 2.0      # after N seconds silence → finalize segment
 
@@ -117,16 +117,16 @@ def transcribe_chunk(pcm_float32: np.ndarray) -> tuple[str, bool]:
         segments, info = whisper_model.transcribe(
             pcm_float32,
             language="en",
-            beam_size=3,             # balance speed vs accuracy
-            best_of=3,
-            vad_filter=True,         # built-in silero VAD — removes silence
+            beam_size=5,
+            best_of=5,
+            vad_filter=True,
             vad_parameters={
-                "min_silence_duration_ms": 300,
-                "speech_pad_ms": 100,
+                "min_silence_duration_ms": 500,
+                "speech_pad_ms": 200,
             },
-            condition_on_previous_text=True,  # improves continuity
-            temperature=0.0,         # greedy decoding for determinism & speed
-            no_speech_threshold=0.6, # skip if probably silence
+            condition_on_previous_text=True,
+            temperature=0.0,
+            no_speech_threshold=0.7,
             compression_ratio_threshold=2.4,
         )
         text = " ".join(seg.text.strip() for seg in segments).strip()

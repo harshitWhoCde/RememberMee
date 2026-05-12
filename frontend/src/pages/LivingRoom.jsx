@@ -314,20 +314,82 @@ export default function LivingRoom() {
 
     processor.onaudioprocess = (evt) => {
 
-      const float32 = evt.inputBuffer.getChannelData(0);
-      // Convert float32 → int16 PCM
-      const int16 = new Int16Array(float32.length);
-      for (let i = 0; i < float32.length; i++) {
-        int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
-      }
-      const chunk = int16.slice().buffer;
-      console.log("Sending audio chunk:", chunk.byteLength);
+      // ===== AUDIO BUFFERING VARIABLES =====
+      let audioChunks = [];
+      let bufferedSamples = 0;
 
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(chunk);
-      } else {
-        pendingChunks.push(chunk);
-      }
+      const BUFFER_SECONDS = 3;
+      const TARGET_SAMPLES = AUDIO_SAMPLE_RATE * BUFFER_SECONDS;
+
+      // Voice Activity Detection threshold
+      const SILENCE_THRESHOLD = 0.015;
+
+      processor.onaudioprocess = (evt) => {
+
+        const float32 = evt.inputBuffer.getChannelData(0);
+
+        // ===== SIMPLE VAD =====
+        let rms = 0;
+
+        for (let i = 0; i < float32.length; i++) {
+          rms += float32[i] * float32[i];
+        }
+
+        rms = Math.sqrt(rms / float32.length);
+
+        // Ignore silence/noise
+        if (rms < SILENCE_THRESHOLD) {
+          return;
+        }
+
+        // ===== FLOAT32 → INT16 PCM =====
+        const int16 = new Int16Array(float32.length);
+
+        for (let i = 0; i < float32.length; i++) {
+          int16[i] = Math.max(
+            -32768,
+            Math.min(32767, float32[i] * 32767)
+          );
+        }
+
+        // Store chunk
+        audioChunks.push(int16);
+
+        bufferedSamples += int16.length;
+
+        // ===== SEND ONLY AFTER 3 SECONDS =====
+        if (bufferedSamples >= TARGET_SAMPLES) {
+
+          // Merge all chunks
+          const merged = new Int16Array(bufferedSamples);
+
+          let offset = 0;
+
+          for (const chunk of audioChunks) {
+            merged.set(chunk, offset);
+            offset += chunk.length;
+          }
+
+          const audioBuffer = merged.buffer;
+
+          console.log(
+            `📤 Sending ${BUFFER_SECONDS}s audio to Whisper`
+          );
+
+          if (
+            wsRef.current &&
+            wsRef.current.readyState === WebSocket.OPEN
+          ) {
+            wsRef.current.send(audioBuffer);
+          } else {
+            pendingChunks.push(audioBuffer);
+          }
+
+          // Reset buffer
+          audioChunks = [];
+          bufferedSamples = 0;
+        }
+      };
     };
 
     source.connect(processor);
@@ -590,8 +652,19 @@ export default function LivingRoom() {
 
   const saveConversationContext = async (transcript) => {
     if (!identifiedPerson) return;
+
     if (!transcript || !transcript.trim()) {
       console.log("No text to save.");
+      return;
+    }
+
+    const wordCount = transcript
+      .trim()
+      .split(/\s+/)
+      .length;
+
+    if (wordCount < 15) {
+      console.log("⚠️ Transcript too short. Ignoring.");
       return;
     }
 

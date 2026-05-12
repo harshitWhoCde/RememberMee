@@ -73,6 +73,39 @@ const getMemoryByName = async (req, res) => {
   }
 };
 
+const cleanTranscript = (text) => {
+
+  if (!text) return "";
+
+  // remove repeated words
+  const words = text.split(/\s+/);
+
+  const cleaned = [];
+
+  let prev = "";
+
+  for (const word of words) {
+
+    const lower = word.toLowerCase();
+
+    if (lower !== prev) {
+      cleaned.push(word);
+    }
+
+    prev = lower;
+  }
+
+  let finalText = cleaned.join(" ");
+
+  // remove filler patterns
+  finalText = finalText.replace(/\b(um+|uh+|hmm+)\b/gi, "");
+
+  // remove excessive spaces
+  finalText = finalText.replace(/\s+/g, " ").trim();
+
+  return finalText;
+};
+
 const updateConversationContext = async (req, res) => {
   try {
     const { name, transcript } = req.body;
@@ -82,10 +115,23 @@ const updateConversationContext = async (req, res) => {
     }
 
     const visitorName = name.trim();
-    const cleanedTranscript = transcript.trim();
-    const prompt = `now summarize this conversation Transcript:
-    ${cleanedTranscript} as you are explaning this to User as this conversation happened earlier in between Visitor Name:
-    ${visitorName} and himself(patient user) in 2 lines only`;
+    const cleanedTranscript = cleanTranscript(transcript);
+    const prompt = `
+You are a memory assistant.
+
+Summarize the conversation naturally.
+
+Rules:
+- Ignore repeated words
+- Ignore speech recognition mistakes
+- Ignore filler words
+- Keep summary short and human-like
+- Mention important topics only
+
+Conversation:
+${cleanedTranscript}
+
+Summary:`;
 
     // console.log("🚀 Sending to Ollama:", prompt);
     let summary = "";
@@ -134,7 +180,7 @@ const updateConversationContext = async (req, res) => {
           updatedAt: new Date()
         }
       },
-      { new: true, sort: { updatedAt: -1, createdAt: -1 } }
+      { returnDocument: 'after', sort: { updatedAt: -1, createdAt: -1 } }
     );
 
     if (!updatedMemory) {
