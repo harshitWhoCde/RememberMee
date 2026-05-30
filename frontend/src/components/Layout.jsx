@@ -14,7 +14,7 @@ export default function Layout() {
   } else if (location.pathname === '/dashboard/visitors') {
     title = 'Visitors Archive';
   } else if (location.pathname === '/dashboard/voice') {
-    title = 'Voice Interface';
+    title = 'Voice Interface (Coming Soon !!!)';
   } else if (location.pathname === '/dashboard/profile') {
     title = 'Profile';
   }
