@@ -1,6 +1,6 @@
-# RememberMee 🧠
+# RememberMe 🧠
 
-**RememberMee** is an AI-powered memory companion designed to support individuals with dementia and memory loss. Using real-time face recognition, live speech transcription, and AI-generated memory summaries, it helps users recognize visitors, recall past interactions, and maintain meaningful social connections — all running **entirely on local hardware**.
+**RememberMe** is an AI-powered memory companion designed to support individuals with dementia and memory loss. Using real-time face recognition, live speech transcription, and AI-generated memory summaries, it helps users recognize visitors, recall past interactions, and maintain meaningful social connections — all running **entirely on local hardware**.
 
 ---
 
@@ -68,7 +68,7 @@ The project is a **four-service system** — all services run locally:
 ## 🗂️ File Structure
 
 ```
-RememberMee/
+RememberMe/
 ├── README.md
 │
 ├── ai-services/                        # Python FastAPI AI microservice
